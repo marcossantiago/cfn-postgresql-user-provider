@@ -10,9 +10,8 @@ log = logging.getLogger()
 request_schema = {
     "$schema": "http://json-schema.org/draft-04/schema#",
     "type": "object",
-    "oneOf": [
-        {"required": ["Database", "User", "Password"]},
-        {"required": ["Database", "User", "PasswordParameterName"]}
+    "anyOf": [
+        {"required": ["Database", "User"]}
     ],
     "properties": {
         "Database": {"$ref": "#/definitions/connection"},
@@ -34,6 +33,11 @@ request_schema = {
             "type": "boolean",
             "default": True,
             "description": "create a database with the same name, or only a user"
+        },
+        "WithIAMAuthentication": {
+            "type": "boolean",
+            "default": False,
+            "description": "allow IAM authentication for the user"
         },
         "DeletionPolicy": {
             "type": "string",
@@ -138,6 +142,10 @@ class PostgreSQLUser(ResourceProvider):
         return self.get('WithDatabase', False)
 
     @property
+    def with_iam_authentication(self):
+        return self.get('WithIAMAuthentication', False)
+
+    @property
     def deletion_policy(self):
         return self.get('DeletionPolicy')
 
@@ -209,14 +217,22 @@ class PostgreSQLUser(ResourceProvider):
     def update_password(self):
         log.info('update password of role %s', self.user)
         with self.connection.cursor() as cursor:
-            cursor.execute("ALTER ROLE %s LOGIN ENCRYPTED PASSWORD %s", [
-                AsIs(self.user), self.user_password])
+            if self.with_iam_authentication:
+                cursor.execute('GRANT rds_iam to %s', [AsIs(self.user)])
+            else:
+                cursor.execute("ALTER ROLE %s LOGIN ENCRYPTED PASSWORD %s", [
+                    AsIs(self.user), self.user_password])
 
     def create_role(self):
         log.info('create role %s ', self.user)
         with self.connection.cursor() as cursor:
-            cursor.execute('CREATE ROLE %s LOGIN ENCRYPTED PASSWORD %s', [
-                AsIs(self.user), self.user_password])
+            if self.with_iam_authentication:
+                cursor.execute('CREATE ROLE %s WITH LOGIN', [AsIs(self.user)])
+                cursor.execute('GRANT rds_iam to %s', [AsIs(self.user)])
+            else:
+                cursor.execute('CREATE ROLE %s LOGIN ENCRYPTED PASSWORD %s', [
+                    AsIs(self.user), self.user_password])
+                cursor.execute('REVOKE rds_iam FROM %s', [AsIs(self.user)])
 
     def create_database(self):
         log.info('create database %s', self.user)
@@ -288,7 +304,7 @@ class PostgreSQLUser(ResourceProvider):
             self.close()
 
     def is_supported_resource_type(self):
-        return self.resource_type in  ['Custom::PostgreSQLUser', 'Custom::PostgresDBUser']
+        return self.resource_type in ['Custom::PostgreSQLUser', 'Custom::PostgresDBUser']
 
 
 provider = PostgreSQLUser()

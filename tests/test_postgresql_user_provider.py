@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 
 class Event(dict):
 
-    def __init__(self, request_type, user, physical_resource_id=None, with_database=False):
+    def __init__(self, request_type, user, physical_resource_id=None, with_database=False, with_iam_authentication=False):
         self.update({
             'RequestType': request_type,
             'ResponseURL': 'https://httpbin.org/put',
@@ -20,6 +20,7 @@ class Event(dict):
             'LogicalResourceId': 'Whatever',
             'ResourceProperties': {
                 'User': user, 'Password': 'password', 'WithDatabase': with_database,
+                'WithIAMAuthentication': with_iam_authentication,
                 'Database': {'User': 'postgres', 'Password': 'password', 'Host': 'localhost',
                               'Port': 5432, 'DBName': 'postgres'}
             }})
@@ -88,6 +89,47 @@ def test_create_user():
     event = Event('Delete', name + "-", physical_resource_id + '-')
     response = handler(event, {})
     assert response['Status'] == 'SUCCESS', response['Reason']
+
+    # delete the created user
+    event = Event('Delete', name, physical_resource_id)
+    response = handler(event, {})
+    assert response['Status'] == 'SUCCESS', response['Reason']
+
+    try:
+        with event.test_user_connection() as connection:
+            assert False, 'succesfully logged in to delete user'
+    except:
+        pass
+
+    event = Event('Delete', name, physical_resource_id, with_database=True)
+    event['ResourceProperties']['DeletionPolicy'] = 'Drop'
+    response = handler(event, {})
+    assert response['Status'] == 'SUCCESS', response['Reason']
+
+
+def test_create_user_iam_authentication():
+    # create a test user
+    name = 'u%s' % str(uuid.uuid4()).replace('-', '')
+    event = Event('Create', name, with_database=False, with_iam_authentication=True)
+
+    # create rds_iam role
+    with event.test_owner_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute('DROP ROLE IF EXISTS rds_iam; CREATE ROLE rds_iam;')
+
+    response = handler(event, {})
+    assert response['Status'] == 'SUCCESS', response['Reason']
+    assert 'PhysicalResourceId' in response
+    physical_resource_id = response['PhysicalResourceId']
+    expect_id = 'postgresql:localhost:5432:postgres::%(name)s' % {'name': name}
+    assert physical_resource_id == expect_id, 'expected %s, got %s' % (expect_id, physical_resource_id)
+
+    with event.test_user_connection() as connection:
+        pass
+
+    event = Event('Create', name, with_database=True, with_iam_authentication=True)
+    response = handler(event, {})
+    assert response['Status'] == 'SUCCESS', '%s' % response['Reason']
 
     # delete the created user
     event = Event('Delete', name, physical_resource_id)
